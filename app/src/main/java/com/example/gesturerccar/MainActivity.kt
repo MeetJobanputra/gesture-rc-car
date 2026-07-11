@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.widget.ArrayAdapter
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -165,6 +166,11 @@ class MainActivity : AppCompatActivity(), GestureRecognizerHelper.GestureResultL
         binding.statusLabel.text = "Sent: $command   ($deviceName)"
     }
 
+    // Shows already-paired devices immediately, then scans (startDiscovery) for
+    // any nearby unpaired ones too - e.g. a fresh HC-05 that Android's Settings
+    // app won't let you pair from directly. Tapping an unpaired entry pairs with
+    // it in-app (createBond) before connecting; tapping an already-paired one
+    // connects right away, same as before.
     @SuppressLint("MissingPermission")
     private fun showDevicePicker() {
         val btPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
@@ -175,20 +181,68 @@ class MainActivity : AppCompatActivity(), GestureRecognizerHelper.GestureResultL
             return
         }
 
-        val devices = bluetoothController.pairedDevices()
-        if (devices.isEmpty()) {
-            binding.statusLabel.text = "No paired devices. Pair your HC-05 in Android Bluetooth settings first."
+        fun labelFor(d: BluetoothDevice): String {
+            val name = d.name ?: d.address
+            return if (d.bondState == BluetoothDevice.BOND_BONDED) name else "$name  (tap to pair)"
+        }
+
+        val devices = mutableListOf<BluetoothDevice>()
+        val seenAddresses = mutableSetOf<String>()
+        bluetoothController.pairedDevices().forEach {
+            devices.add(it)
+            seenAddresses.add(it.address)
+        }
+
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_list_item_1,
+            devices.map { labelFor(it) }.toMutableList()
+        )
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Select your car's Bluetooth module (scanning\u2026)")
+            .setAdapter(adapter) { _, which -> connectTo(devices[which]) }
+            .setNegativeButton("Cancel", null)
+            .setOnDismissListener { bluetoothController.stopDiscovery() }
+            .show()
+
+        bluetoothController.startDiscovery(
+            onDeviceFound = { device ->
+                if (seenAddresses.add(device.address)) {
+                    runOnUiThread {
+                        devices.add(device)
+                        adapter.add(labelFor(device))
+                    }
+                }
+            },
+            onFinished = {
+                runOnUiThread { dialog.setTitle("Select your car's Bluetooth module") }
+            }
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun connectTo(device: BluetoothDevice) {
+        bluetoothController.stopDiscovery()
+
+        if (device.bondState == BluetoothDevice.BOND_BONDED) {
+            finishConnect(device)
             return
         }
 
-        val names = devices.map { it.name ?: it.address }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("Select your car's Bluetooth module")
-            .setItems(names) { _, which -> connectTo(devices[which]) }
-            .show()
+        binding.statusLabel.text = "Pairing with ${device.name ?: device.address}\u2026 check for a PIN prompt"
+        bluetoothController.createBond(device) { bonded ->
+            runOnUiThread {
+                if (bonded) {
+                    finishConnect(device)
+                } else {
+                    binding.statusLabel.text = "Pairing failed or was cancelled - tap Connect to Car to try again"
+                }
+            }
+        }
     }
 
-    private fun connectTo(device: BluetoothDevice) {
+    private fun finishConnect(device: BluetoothDevice) {
         binding.statusLabel.text = "Connecting..."
         Thread {
             val ok = bluetoothController.connect(device)
@@ -207,7 +261,7 @@ class MainActivity : AppCompatActivity(), GestureRecognizerHelper.GestureResultL
         mainHandler.removeCallbacks(watchdog)
         cameraExecutor.shutdown()
         gestureHelper.close()
-        bluetoothController.disconnect()
+        bluetoothController.release()
     }
 
     companion object {
