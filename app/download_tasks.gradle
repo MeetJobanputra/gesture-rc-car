@@ -1,0 +1,26 @@
+// Downloads the pre-trained MediaPipe gesture_recognizer.task model file into
+// app/src/main/assets/ automatically the first time you build, so you don't
+// have to fetch it by hand.
+//
+// If your machine is behind a firewall/proxy and this fails, just download it
+// yourself from the URL below and place it at:
+//   app/src/main/assets/gesture_recognizer.task
+
+task downloadGestureRecognizerModel {
+    doLast {
+        def modelDir = new File(projectDir, "src/main/assets")
+        if (!modelDir.exists()) {
+            modelDir.mkdirs()
+        }
+        def modelFile = new File(modelDir, "gesture_recognizer.task")
+        if (!modelFile.exists()) {
+            def modelUrl = "https://storage.googleapis.com/mediapipe-tasks/gesture_recognizer/gesture_recognizer.task"
+            println "Downloading gesture_recognizer.task model to ${modelFile}..."
+            ant.get(src: modelUrl, dest: modelFile, verbose: true)
+        } else {
+            println "gesture_recognizer.task already present, skipping download."
+        }
+    }
+}
+
+preBuild.dependsOn downloadGestureRecognizerModel
